@@ -507,7 +507,7 @@
 
     .place-row {
       display: grid;
-      grid-template-columns: auto 1fr auto;
+      grid-template-columns: auto 1fr auto auto;
       gap: 10px;
       align-items: center;
       padding: 11px;
@@ -710,7 +710,6 @@
     }
 
     .place.custom .place-row {
-      grid-template-columns: auto 1fr auto auto;
       background: linear-gradient(90deg, rgba(47, 155, 216, 0.05), transparent 70%);
       border-top-left-radius: 18px;
       border-top-right-radius: 18px;
@@ -922,6 +921,33 @@
       background: #f1f7f8;
     }
 
+    .modal-button.danger {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: #ffffff;
+      background: linear-gradient(135deg, var(--sunset), var(--danger));
+      box-shadow: 0 14px 28px rgba(216, 108, 75, 0.28);
+    }
+
+    .modal.modal-compact {
+      max-width: 420px;
+    }
+
+    .confirm-delete-text {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+      font-weight: 600;
+      line-height: 1.5;
+    }
+
+    .confirm-delete-text strong {
+      color: var(--ink);
+      font-weight: 800;
+    }
+
     .modal-button:hover {
       transform: translateY(-1px);
     }
@@ -1111,6 +1137,24 @@
           </button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="confirmDeleteModal" hidden role="dialog" aria-modal="true" aria-labelledby="confirmDeleteTitle">
+    <div class="modal modal-compact">
+      <header class="modal-header">
+        <h2 id="confirmDeleteTitle">Deletar o lugar?</h2>
+      </header>
+      <div class="modal-form">
+        <p class="confirm-delete-text">Tem certeza que quer remover <strong id="confirmDeleteName">este lugar</strong> da lista?</p>
+        <div class="modal-actions">
+          <button type="button" id="confirmDeleteNo" class="modal-button secondary" data-action="confirm-delete-no">Não</button>
+          <button type="button" class="modal-button danger" data-action="confirm-delete-yes">
+            <i data-lucide="trash-2" class="icon small" aria-hidden="true"></i>
+            Sim
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1513,7 +1557,8 @@
         details: [],
         filters: [],
         customRegions: [],
-        customPlaces: []
+        customPlaces: [],
+        deletedDefaults: []
       };
     }
 
@@ -1530,7 +1575,8 @@
           details: Array.isArray(parsed.details) ? parsed.details : [],
           filters: Array.isArray(parsed.filters) ? parsed.filters : [],
           customRegions: Array.isArray(parsed.customRegions) ? parsed.customRegions : [],
-          customPlaces: Array.isArray(parsed.customPlaces) ? parsed.customPlaces : []
+          customPlaces: Array.isArray(parsed.customPlaces) ? parsed.customPlaces : [],
+          deletedDefaults: Array.isArray(parsed.deletedDefaults) ? parsed.deletedDefaults : []
         };
       } catch (error) {
         return memoryState;
@@ -1547,9 +1593,10 @@
     }
 
     function getRegioes() {
+      const deleted = new Set(state.deletedDefaults || []);
       const merged = regioes.map((r) => ({
         ...r,
-        locais: [...r.locais]
+        locais: r.locais.filter((local) => !deleted.has(local.id))
       }));
 
       (state.customRegions || []).forEach((cr) => {
@@ -1724,9 +1771,7 @@
         ? `<a class="map-link" href="${escapeHtml(mapsUrl)}" target="_blank" rel="noopener noreferrer" aria-label="Abrir localização de ${escapeHtml(local.nome)}"><i data-lucide="map-pin" class="icon" aria-hidden="true"></i></a>`
         : `<span class="map-link" aria-label="Localização indisponível"><i data-lucide="map-pin-off" class="icon" aria-hidden="true"></i></span>`;
 
-      const removeButton = local.isCustom
-        ? `<button class="place-remove" type="button" data-action="remove-place" data-place-id="${escapeHtml(local.id)}" aria-label="Remover ${escapeHtml(local.nome)}"><i data-lucide="x" class="icon small" aria-hidden="true"></i></button>`
-        : "";
+      const removeButton = `<button class="place-remove" type="button" data-action="remove-place" data-place-id="${escapeHtml(local.id)}" data-place-name="${escapeHtml(local.nome)}" aria-label="Remover ${escapeHtml(local.nome)}"><i data-lucide="x" class="icon small" aria-hidden="true"></i></button>`;
 
       return `
         <div class="place ${open ? "open" : ""} ${local.isCustom ? "custom" : ""}">
@@ -1927,15 +1972,58 @@
 
       if (action === "remove-place") {
         const placeId = target.dataset.placeId;
-        const customPlace = (state.customPlaces || []).find((cp) => cp.id === placeId);
-        if (!customPlace) return;
-        const confirmed = window.confirm(`Remover "${customPlace.nome}" da lista?`);
-        if (!confirmed) return;
-        state.customPlaces = state.customPlaces.filter((cp) => cp.id !== placeId);
-        state.visited = state.visited.filter((id) => id !== placeId);
-        state.details = state.details.filter((id) => id !== placeId);
+        const placeName = target.dataset.placeName || "este lugar";
+        openConfirmDeleteModal(placeId, placeName);
+        return;
+      }
 
-        // Remove empty custom regions to avoid leftover ghost groups
+      if (action === "confirm-delete-yes") {
+        confirmDeletePlace();
+        return;
+      }
+
+      if (action === "confirm-delete-no") {
+        closeConfirmDeleteModal();
+        return;
+      }
+    });
+
+    let pendingDeleteId = null;
+
+    function openConfirmDeleteModal(placeId, placeName) {
+      pendingDeleteId = placeId;
+      const modal = document.getElementById("confirmDeleteModal");
+      document.getElementById("confirmDeleteName").textContent = placeName;
+      modal.removeAttribute("hidden");
+      document.body.style.overflow = "hidden";
+      if (window.lucide) {
+        window.lucide.createIcons();
+      }
+      window.setTimeout(() => {
+        const noBtn = document.getElementById("confirmDeleteNo");
+        if (noBtn) noBtn.focus();
+      }, 60);
+    }
+
+    function closeConfirmDeleteModal() {
+      pendingDeleteId = null;
+      const modal = document.getElementById("confirmDeleteModal");
+      modal.setAttribute("hidden", "");
+      document.body.style.overflow = "";
+    }
+
+    function confirmDeletePlace() {
+      const placeId = pendingDeleteId;
+      if (!placeId) {
+        closeConfirmDeleteModal();
+        return;
+      }
+
+      const isCustomPlace = (state.customPlaces || []).some((cp) => cp.id === placeId);
+
+      if (isCustomPlace) {
+        state.customPlaces = state.customPlaces.filter((cp) => cp.id !== placeId);
+        // Remove grupos customizados vazios
         const usedRegionIds = new Set(state.customPlaces.map((cp) => cp.regiaoId));
         state.customRegions = (state.customRegions || []).filter((cr) => usedRegionIds.has(cr.id));
         state.expanded = state.expanded.filter((id) => {
@@ -1944,13 +2032,21 @@
             || id === "observacoes-gerais";
           return stillExists;
         });
-
-        saveState();
-        render();
-        showToast("Lugar removido.", true);
-        return;
+      } else {
+        // Lugar padrão: marca como deletado para que getRegioes() o oculte
+        if (!state.deletedDefaults.includes(placeId)) {
+          state.deletedDefaults = [...state.deletedDefaults, placeId];
+        }
       }
-    });
+
+      state.visited = state.visited.filter((id) => id !== placeId);
+      state.details = state.details.filter((id) => id !== placeId);
+
+      saveState();
+      render();
+      closeConfirmDeleteModal();
+      showToast("Lugar removido.", true);
+    }
 
     function openAddPlaceModal() {
       const modal = document.getElementById("addPlaceModal");
@@ -2017,11 +2113,22 @@
       }
     });
 
+    document.getElementById("confirmDeleteModal").addEventListener("click", (event) => {
+      if (event.target.id === "confirmDeleteModal") {
+        closeConfirmDeleteModal();
+      }
+    });
+
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
-        const modal = document.getElementById("addPlaceModal");
-        if (!modal.hasAttribute("hidden")) {
+        const addModal = document.getElementById("addPlaceModal");
+        if (!addModal.hasAttribute("hidden")) {
           closeAddPlaceModal();
+          return;
+        }
+        const confirmModal = document.getElementById("confirmDeleteModal");
+        if (!confirmModal.hasAttribute("hidden")) {
+          closeConfirmDeleteModal();
         }
       }
     });
